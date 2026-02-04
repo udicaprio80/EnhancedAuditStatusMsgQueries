@@ -1,14 +1,12 @@
+
+
+
+
 <#
-    This script was previously hosted on TechNet Gallery by SaudM to provide a method to export all Status Messages in a ConfigMgr environment.
-
-    Export Client Messages Example
-    .\Export-StatusMessages.ps1 -stringPathToDLL "<InstallDrive>:\Program Files\Microsoft Configuration Manager\bin\X64\system32\smsmsgs\climsgs.dll" -stringOutputCSV ExportClientMsgs.csv
-
-    Export Provider Messages Example
-    .\Export-StatusMessages.ps1 -stringPathToDLL "<InstallDrive>:\Program Files\Microsoft Configuration Manager\bin\X64\system32\smsmsgs\provmsgs.dll" -stringOutputCSV ExportProviderMsgs.csv
-
-    Export Server Messages Example
-    .\Export-StatusMessages.ps1 -stringPathToDLL "<InstallDrive>:\Program Files\Microsoft Configuration Manager\bin\X64\system32\smsmsgs\srvmsgs.dll" -stringOutputCSV ExportServerMsgs.csv
+    Script: Import-CMStatusMessageQueries (Fixed v2 U. Di Caprio)
+    Optimized: Gemini AI for Windows Server 2022 / MEMCM
+    
+    Description: Exports SCCM Status Messages from DLL resources.
 #>
 
 param( 
@@ -17,95 +15,105 @@ param(
     [Parameter(Mandatory=$True)] 
     [string]$stringOutputCSV 
 ) 
- 
-#Start PInvoke Code 
-$sigFormatMessage = @' 
-[DllImport("kernel32.dll")] 
-public static extern uint FormatMessage(uint flags, IntPtr source, uint messageId, uint langId, StringBuilder buffer, uint size, string[] arguments); 
-'@ 
- 
-$sigGetModuleHandle = @' 
-[DllImport("kernel32.dll")] 
-public static extern IntPtr GetModuleHandle(string lpModuleName); 
-'@ 
- 
-$sigLoadLibrary = @' 
-[DllImport("kernel32.dll")] 
-public static extern IntPtr LoadLibrary(string lpFileName); 
-'@ 
- 
-$Win32FormatMessage = Add-Type -MemberDefinition $sigFormatMessage -name "Win32FormatMessage" -namespace Win32Functions -PassThru -Using System.Text 
-$Win32GetModuleHandle = Add-Type -MemberDefinition $sigGetModuleHandle -name "Win32GetModuleHandle" -namespace Win32Functions -PassThru -Using System.Text 
-$Win32LoadLibrary = Add-Type -MemberDefinition $sigLoadLibrary -name "Win32LoadLibrary" -namespace Win32Functions -PassThru -Using System.Text 
-#End PInvoke Code 
-  
-$sizeOfBuffer = [int]16384 
-$stringArrayInput = {"%1","%2","%3","%4","%5", "%6", "%7", "%8", "%9"} 
-$flags = 0x00000800 -bor 0x00000200  
+
+# Definisce la classe C# per le chiamate API di Windows (P/Invoke) una sola volta
+$TypeDefinition = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public class Win32MsgUtils {
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern uint FormatMessage(uint flags, IntPtr source, uint messageId, uint langId, StringBuilder buffer, uint size, string[] arguments);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern IntPtr LoadLibrary(string lpFileName);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool FreeLibrary(IntPtr hModule);
+}
+'@
+
+# Compila il tipo solo se non gia caricato nella sessione
+if (-not ([System.Management.Automation.PSTypeName]'Win32MsgUtils').Type) {
+    Add-Type -TypeDefinition $TypeDefinition
+}
+
+# Configurazione costanti
+$sizeOfBuffer = 16384 
+$stringArrayInput = $null # Non servono argomenti per l'estrazione pura
+# Flags: FORMAT_MESSAGE_IGNORE_INSERTS (0x200) | FORMAT_MESSAGE_FROM_HMODULE (0x800)
+$flags = 0x00000A00 
 $stringOutput = New-Object System.Text.StringBuilder $sizeOfBuffer 
-$colMessages = @() 
-#$strOutputCSV = "C:\messages\foo.csv" 
-#$stringPathToDLL = "C:\Program Files\Microsoft Configuration Manager\bin\X64\system32\smsmsgs\srvmsgs.dll" 
- 
-#Load Status Message Lookup DLL into memory and get pointer to memory 
-$ptrFoo = $Win32LoadLibrary::LoadLibrary($stringPathToDLL.ToString()) 
-$ptrModule = $Win32GetModuleHandle::GetModuleHandle($stringPathToDLL.ToString()) 
- 
-#Find Informational Status Messages 
-for ($iMessageID = 1; $iMessageID -ile 99999; $iMessageID++) 
-{ 
-    $result = $Win32FormatMessage::FormatMessage($flags, $ptrModule, 1073741824 -bor $iMessageID, 0, $stringOutput, $sizeOfBuffer, $stringArrayInput) 
-     
-    if( $result -gt 0) 
-    { 
-        $objMessage = New-Object System.Object 
-        $objMessage | Add-Member -type NoteProperty -name MessageID -value $iMessageID 
-        $objMessage | Add-Member -type NoteProperty -name MessageString -value $stringOutput.ToString().Replace("%11","").Replace("%12","").Replace("%3%4%5%6%7%8%9%10","") 
-        $objMessage | Add-Member -type NoteProperty -name Severity -value "Informational" 
-        $colMessages += $objMessage 
-        $iMessageID 
-        $stringOutput.ToString() 
-    } 
-     
-    $previousString = $stringOutput.ToString() 
-} 
- 
-#Find Warning Status Messages 
-for ($iMessageID = 1; $iMessageID -ile 99999; $iMessageID++) 
-{ 
-    $result = $Win32FormatMessage::FormatMessage($flags, $ptrModule, 2147483648 -bor $iMessageID, 0, $stringOutput, $sizeOfBuffer, $stringArrayInput) 
-     
-    if( $result -gt 0) 
-    { 
-        $objMessage = New-Object System.Object 
-        $objMessage | Add-Member -type NoteProperty -name MessageID -value $iMessageID 
-        $objMessage | Add-Member -type NoteProperty -name MessageString -value $stringOutput.ToString().Replace("%11","").Replace("%12","").Replace("%3%4%5%6%7%8%9%10","") 
-        $objMessage | Add-Member -type NoteProperty -name Severity -value "Warning" 
-        $colMessages += $objMessage 
-        $iMessageID 
-        $stringOutput.ToString() 
-    } 
- 
-    $previousString = $stringOutput.ToString() 
-} 
- 
-#Find Error Status Messages 
-for ($iMessageID = 1; $iMessageID -ile 99999; $iMessageID++) 
-{ 
-    $result = $Win32FormatMessage::FormatMessage($flags, $ptrModule, 3221225472 -bor $iMessageID, 0, $stringOutput, $sizeOfBuffer, $stringArrayInput) 
-     
-    if( $result -gt 0) 
-    { 
-        $objMessage = New-Object System.Object 
-        $objMessage | Add-Member -type NoteProperty -name MessageID -value $iMessageID 
-        $objMessage | Add-Member -type NoteProperty -name MessageString -value $stringOutput.ToString().Replace("%11","").Replace("%12","").Replace("%3%4%5%6%7%8%9%10","") 
-        $objMessage | Add-Member -type NoteProperty -name Severity -value "Error" 
-        $colMessages += $objMessage 
-        $iMessageID 
-        $stringOutput.ToString() 
-    } 
-     
-    $previousString = $stringOutput.ToString() 
-} 
- 
-$colMessages | Export-CSV -path $stringOutputCSV
+$colMessages = [System.Collections.Generic.List[PSObject]]::new()
+
+Write-Host "Caricamento libreria: $stringPathToDLL" -ForegroundColor Cyan
+
+# Carica la DLL in memoria
+$hModule = [Win32MsgUtils]::LoadLibrary($stringPathToDLL)
+
+if ($hModule -eq [IntPtr]::Zero) {
+    Write-Error "Impossibile caricare la DLL. Verifica il percorso e che l'architettura (x64/x86) corrisponda alla shell PowerShell."
+    return
+}
+
+try {
+    Write-Host "Libreria caricata. Inizio estrazione messaggi..." -ForegroundColor Green
+    
+    # Definizione delle severity bitmasks
+    # 0x40000000 = Informational (1073741824)
+    # 0x80000000 = Warning (2147483648)
+    # 0xC0000000 = Error (3221225472)
+    
+    $severities = @{
+        "Informational" = 1073741824
+        "Warning"       = 2147483648
+        "Error"         = 3221225472
+    }
+
+    foreach ($sevName in $severities.Keys) {
+        $bitMask = $severities[$sevName]
+        Write-Progress -Activity "Estrazione messaggi ($sevName)" -Status "Elaborazione..."
+        
+        # Loop ottimizzato
+        for ($i = 1; $i -le 65535; $i++) { # Ridotto a 65535 (range tipico WORD), aumentare se necessario
+            
+            # Combina la maschera di gravita con l'ID messaggio
+            # Nota: PowerShell gestisce i numeri grandi come Int64/UInt32 automaticamente qui
+            $msgIdToCheck = $bitMask -bor $i
+            
+            # Pulisce il buffer
+            $stringOutput.Clear() | Out-Null
+            
+            $result = [Win32MsgUtils]::FormatMessage($flags, $hModule, $msgIdToCheck, 0, $stringOutput, $sizeOfBuffer, $stringArrayInput)
+            
+            if ($result -gt 0) {
+                # Pulizia stringa originale
+                $cleanMsg = $stringOutput.ToString().Replace("%11","").Replace("%12","").Replace("%3%4%5%6%7%8%9%10","").Trim()
+                
+                # Creazione oggetto veloce
+                $obj = [PSCustomObject]@{
+                    MessageID     = $i
+                    Severity      = $sevName
+                    MessageString = $cleanMsg
+                }
+                $colMessages.Add($obj)
+            }
+        }
+    }
+
+    Write-Host "Trovati $($colMessages.Count) messaggi totali." -ForegroundColor Green
+    
+    # Esportazione
+    Write-Host "Esportazione in corso su: $stringOutputCSV"
+    $colMessages | Export-Csv -Path $stringOutputCSV -NoTypeInformation -Encoding UTF8
+
+}
+finally {
+    # Rilascia la DLL dalla memoria per evitare lock
+    if ($hModule -ne [IntPtr]::Zero) {
+        [Win32MsgUtils]::FreeLibrary($hModule) | Out-Null
+        Write-Host "Libreria rilasciata." -ForegroundColor Cyan
+    }
+}
